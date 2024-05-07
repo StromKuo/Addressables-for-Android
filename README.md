@@ -1,3 +1,6 @@
+# Notes
+- Since Unity 6 , Android: Added the Addressables for Android (com.unity.addressables.android) package. This package provides Play Asset Delivery support for Addressables.
+
 # What
 - Play Asset Delivery Using Addressable for Unity
 
