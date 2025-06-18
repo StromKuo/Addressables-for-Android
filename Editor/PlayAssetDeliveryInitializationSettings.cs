@@ -48,9 +48,29 @@ namespace AddressablesPlayAssetDelivery.Editor
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
         {
             EditorGUI.BeginProperty(position, label, property);
-            var prop = property.FindPropertyRelative("m_LogWarnings");
-            prop.boolValue = EditorGUI.Toggle(position, new GUIContent("Log Warnings", "Show warnings that occur when configuring Addressables."), prop.boolValue);
+            
+            // Calculate position for each field
+            float singleLineHeight = EditorGUIUtility.singleLineHeight;
+            float spacing = EditorGUIUtility.standardVerticalSpacing;
+            
+            Rect firstFieldRect = new Rect(position.x, position.y, position.width, singleLineHeight);
+            Rect secondFieldRect = new Rect(position.x, position.y + singleLineHeight + spacing, position.width, singleLineHeight);
+            
+            // Display Log Warnings field
+            var logWarningsProp = property.FindPropertyRelative("m_LogWarnings");
+            logWarningsProp.boolValue = EditorGUI.Toggle(firstFieldRect, new GUIContent("Log Warnings", "Show warnings that occur when configuring Addressables."), logWarningsProp.boolValue);
+            
+            // Display Wait For FastFollow Download field
+            var waitForFastFollowProp = property.FindPropertyRelative("m_WaitForFastFollowDownload");
+            waitForFastFollowProp.boolValue = EditorGUI.Toggle(secondFieldRect, new GUIContent("Wait For FastFollow Download", "Controls whether to wait for FastFollow resources download before completing Addressables initialization"), waitForFastFollowProp.boolValue);
+            
             EditorGUI.EndProperty();
+        }
+        
+        public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
+        {
+            // Return height for both fields
+            return EditorGUIUtility.singleLineHeight * 2 + EditorGUIUtility.standardVerticalSpacing;
         }
     }
 }

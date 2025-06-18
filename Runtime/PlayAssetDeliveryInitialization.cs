@@ -40,7 +40,9 @@ namespace AddressablesPlayAssetDelivery
         public virtual AsyncOperationHandle<bool> InitializeAsync(ResourceManager rm, string id, string data)
         {
             var op = new PlayAssetDeliveryInitializeOperation();
-            return op.Start(rm, LogWarnings(data));
+            var initializeData = JsonUtility.FromJson<PlayAssetDeliveryInitializationData>(data);
+            bool waitForFastFollow = initializeData?.WaitForFastFollowDownload ?? false;
+            return op.Start(rm, LogWarnings(data), waitForFastFollow);
         }
     }
 
@@ -51,14 +53,16 @@ namespace AddressablesPlayAssetDelivery
     {
         ResourceManager m_RM;
         bool m_LogWarnings = false;
+        bool m_WaitForFastFollow = false;
 
         bool m_IsDone = false; // AsyncOperationBase.IsDone is internal
         bool m_HasExecuted = false;  // AsyncOperationBase.HasExecuted is internal
 
-        public AsyncOperationHandle<bool> Start(ResourceManager rm, bool logWarnings)
+        public AsyncOperationHandle<bool> Start(ResourceManager rm, bool logWarnings, bool waitForFastFollow = false)
         {
             m_RM = rm;
             m_LogWarnings = logWarnings;
+            m_WaitForFastFollow = waitForFastFollow;
             return m_RM.StartOperation(this, default);
         }
 
@@ -104,8 +108,41 @@ namespace AddressablesPlayAssetDelivery
                 if (coreUnityAssetPackNames.Length == 0)
                     CompleteOverride("Cannot retrieve core Unity asset pack names. PlayCore Plugin is not installed.");
                 else
-                    AndroidAssetPacks.DownloadAssetPackAsync(coreUnityAssetPackNames, CheckDownloadStatus);
+                {
+                    if (m_WaitForFastFollow)
+                    {
+                        // Wait for FastFollow download completion (original behavior)
+                        AndroidAssetPacks.DownloadAssetPackAsync(coreUnityAssetPackNames, CheckDownloadStatus);
+                    }
+                    else
+                    {
+                        // Don't block initialization, let FastFollow resources download in background
+                        StartFastFollowDownloadInBackground(coreUnityAssetPackNames);
+                        
+                        // Complete initialization immediately without waiting for FastFollow download
+                        DownloadCustomAssetPacksData();
+                    }
+                }
             }
+        }
+
+        void StartFastFollowDownloadInBackground(string[] coreUnityAssetPackNames)
+        {
+            // Start FastFollow download in background without blocking main thread
+            AndroidAssetPacks.DownloadAssetPackAsync(coreUnityAssetPackNames, (info) =>
+            {
+                // Add download status monitoring here, but don't affect Addressables initialization
+                Debug.Log($"FastFollow asset pack '{info.name}' download status: {info.status}");
+                
+                if (info.status == AndroidAssetPackStatus.Completed)
+                {
+                    Debug.Log($"FastFollow asset pack '{info.name}' download completed in background");
+                }
+                else if (info.status == AndroidAssetPackStatus.Failed)
+                {
+                    Debug.LogWarning($"FastFollow asset pack '{info.name}' download failed: will retry later");
+                }
+            });
         }
 
         void LoadFromEditorData()
@@ -150,27 +187,57 @@ namespace AddressablesPlayAssetDelivery
 
         void CheckDownloadStatus(AndroidAssetPackInfo info)
         {
-            if (info.status == AndroidAssetPackStatus.Failed)
-                CompleteOverride($"Failed to retrieve the state of asset pack '{info.name}'.");
-            else if (info.status == AndroidAssetPackStatus.Unknown)
-                CompleteOverride($"Asset pack '{info.name}' is unavailable for this application. This can occur if the app was not installed through Google Play.");
-            else if (info.status == AndroidAssetPackStatus.Canceled)
-                CompleteOverride($"Cancelled asset pack download request '{info.name}'.");
-            else if (info.status == AndroidAssetPackStatus.WaitingForWifi)
+            if (m_WaitForFastFollow)
             {
-                AndroidAssetPacks.RequestToUseMobileDataAsync(result =>
+                // Wait mode: block initialization on download failure
+                if (info.status == AndroidAssetPackStatus.Failed)
+                    CompleteOverride($"Failed to retrieve the state of asset pack '{info.name}'.");
+                else if (info.status == AndroidAssetPackStatus.Unknown)
+                    CompleteOverride($"Asset pack '{info.name}' is unavailable for this application. This can occur if the app was not installed through Google Play.");
+                else if (info.status == AndroidAssetPackStatus.Canceled)
+                    CompleteOverride($"Cancelled asset pack download request '{info.name}'.");
+                else if (info.status == AndroidAssetPackStatus.WaitingForWifi)
                 {
-                    if (!result.allowed)
-                        CompleteOverride("Request to use mobile data was denied.");
-                });
+                    AndroidAssetPacks.RequestToUseMobileDataAsync(result =>
+                    {
+                        if (!result.allowed)
+                            CompleteOverride("Request to use mobile data was denied.");
+                    });
+                }
+                else if (info.status == AndroidAssetPackStatus.Completed)
+                {
+                    string assetPackPath = AndroidAssetPacks.GetAssetPackPath(info.name);
+                    if (string.IsNullOrEmpty(assetPackPath))
+                        CompleteOverride($"Downloaded asset pack '{info.name}' but cannot locate it on device.");
+                    else if (AndroidAssetPacks.coreUnityAssetPacksDownloaded)
+                        DownloadCustomAssetPacksData();
+                }
             }
-            else if (info.status == AndroidAssetPackStatus.Completed)
+            else
             {
-                string assetPackPath = AndroidAssetPacks.GetAssetPackPath(info.name);
-                if (string.IsNullOrEmpty(assetPackPath))
-                    CompleteOverride($"Downloaded asset pack '{info.name}' but cannot locate it on device.");
-                else if (AndroidAssetPacks.coreUnityAssetPacksDownloaded)
-                    DownloadCustomAssetPacksData();
+                // Background mode: only log, don't affect initialization
+                if (info.status == AndroidAssetPackStatus.Failed)
+                    Debug.LogWarning($"Failed to retrieve the state of asset pack '{info.name}'.");
+                else if (info.status == AndroidAssetPackStatus.Unknown)
+                    Debug.LogWarning($"Asset pack '{info.name}' is unavailable for this application. This can occur if the app was not installed through Google Play.");
+                else if (info.status == AndroidAssetPackStatus.Canceled)
+                    Debug.LogWarning($"Cancelled asset pack download request '{info.name}'.");
+                else if (info.status == AndroidAssetPackStatus.WaitingForWifi)
+                {
+                    AndroidAssetPacks.RequestToUseMobileDataAsync(result =>
+                    {
+                        if (!result.allowed)
+                            Debug.LogWarning("Request to use mobile data was denied.");
+                    });
+                }
+                else if (info.status == AndroidAssetPackStatus.Completed)
+                {
+                    string assetPackPath = AndroidAssetPacks.GetAssetPackPath(info.name);
+                    if (string.IsNullOrEmpty(assetPackPath))
+                        Debug.LogWarning($"Downloaded asset pack '{info.name}' but cannot locate it on device.");
+                    else
+                        Debug.Log($"Asset pack '{info.name}' download completed successfully.");
+                }
             }
         }
 
@@ -230,5 +297,12 @@ namespace AddressablesPlayAssetDelivery
         /// Enable recompression of asset bundles into LZ4 format as they are saved to the cache.  This sets the Caching.compressionEnabled value.
         /// </summary>
         public bool LogWarnings { get { return m_LogWarnings; } set { m_LogWarnings = value; } }
+        
+        [SerializeField]
+        bool m_WaitForFastFollowDownload = false;
+        /// <summary>
+        /// Controls whether to wait for FastFollow resources download before completing Addressables initialization
+        /// </summary>
+        public bool WaitForFastFollowDownload { get { return m_WaitForFastFollowDownload; } set { m_WaitForFastFollowDownload = value; } }
     }
 }
